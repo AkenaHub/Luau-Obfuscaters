@@ -1,75 +1,84 @@
-local dump = {}
+local Decoder = {}
 
-dump.strings = {}
-dump.seen = {}
+Decoder.output = {
+    strings = {},
+    rawTables = {}
+}
 
-local function safeStore(v)
-    if type(v) ~= "string" then return end
-    if dump.seen[v] then return end
-    dump.seen[v] = true
-    table.insert(dump.strings, v)
-end
+-- Extract quoted byte-escaped strings like "\069\117..."
+local function extractEncodedStrings(source)
+    local results = {}
 
--- Hook common decode entry points (pcall-safe)
-local oldGsub = string.gsub
-string.gsub = function(...)
-    local a, b, c = ...
-    safeStore(a)
-    safeStore(b)
-    return oldGsub(...)
-end
-
-local oldSub = string.sub
-string.sub = function(...)
-    local a, b, c = ...
-    safeStore(a)
-    return oldSub(...)
-end
-
-local oldConcat = table.concat
-table.concat = function(...)
-    local t = ...
-    if type(t) == "table" then
-        for _, v in next, t do
-            safeStore(v)
+    for match in source:gmatch('"(.-)"') do
+        if match:find("\\%d%d%d") then
+            table.insert(results, match)
         end
     end
-    return oldConcat(...)
+
+    return results
 end
 
--- Hook metatable access (VM uses this heavily)
-local oldGetmt = getmetatable
-getmetatable = function(obj)
-    local mt = oldGetmt(obj)
-    safeStore(tostring(obj))
-    return mt
+-- Convert \xxx byte strings into readable text
+local function decodeBytes(str)
+    return (str:gsub("\\(%d%d%d)", function(code)
+        return string.char(tonumber(code))
+    end))
 end
 
--- Capture environment indexing (very important for VM dumps)
-local env = getfenv and getfenv() or _G
+-- Extract F table from WeAreDevs blob
+local function extractFTable(source)
+    local F = {}
 
-setmetatable(env, {
-    __index = function(self, key)
-        safeStore(tostring(key))
-        return rawget(self, key)
+    local inside = source:match("local F%s*=%s*{(.-)}")
+    if not inside then return F end
+
+    for item in inside:gmatch('"([^"]+)"') do
+        table.insert(F, item)
     end
-})
 
--- Run target (replace THIS with your obfuscated script)
-local function run(target)
-    local success, err = pcall(target)
-    if not success then
-        warn("VM error:", err)
+    return F
+end
+
+-- Try to decode readable keywords inside strings
+local function extractKeywords(text)
+    local keywords = {}
+
+    for word in text:gmatch("[a-zA-Z_][a-zA-Z0-9_%.:]+") do
+        table.insert(keywords, word)
+    end
+
+    return keywords
+end
+
+function Decoder:run(source)
+    -- Step 1: extract raw encoded strings
+    local encoded = extractEncodedStrings(source)
+
+    for _, v in ipairs(encoded) do
+        local decoded = decodeBytes(v)
+        table.insert(self.output.strings, decoded)
+
+        -- Step 2: pull readable keywords
+        for _, k in ipairs(extractKeywords(decoded)) do
+            table.insert(self.output.rawTables, k)
+        end
     end
 end
 
--- EXPORT DUMP
-function dump:print()
-    print("=== WEAREDEVS DUMP START ===")
-    for i, v in ipairs(self.strings) do
+function Decoder:print()
+    print("=== STATIC WEAREDEVS DECODED OUTPUT ===")
+
+    print("\n--- STRINGS ---")
+    for i, v in ipairs(self.output.strings) do
         print(i, v)
     end
-    print("=== WEAREDEVS DUMP END ===")
+
+    print("\n--- KEYWORDS ---")
+    for i, v in ipairs(self.output.rawTables) do
+        print(i, v)
+    end
+
+    print("=== END ===")
 end
 
-return dump
+return Decoder
